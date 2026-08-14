@@ -988,7 +988,7 @@ def create_quote_image(excel_path, currency_symbol):
     ws = wb.active
 
     # ========================================================
-    # HIGH RESOLUTION SCALE
+    # HIGH RESOLUTION
     # ========================================================
 
     SCALE = 3
@@ -1006,8 +1006,9 @@ def create_quote_image(excel_path, currency_symbol):
     # Header + products + commissioning + lux + total
     rows = product_rows + 4
 
+    # Larger cells
     cell_width = 130 * SCALE
-    cell_height = 32 * SCALE
+    cell_height = 48 * SCALE
 
     img = Image.new(
         "RGB",
@@ -1021,7 +1022,7 @@ def create_quote_image(excel_path, currency_symbol):
     draw = ImageDraw.Draw(img)
 
     # ========================================================
-    # UNICODE FONT
+    # FONTS
     # ========================================================
 
     font_path = (
@@ -1036,19 +1037,23 @@ def create_quote_image(excel_path, currency_symbol):
 
     try:
 
+        # Much larger than before
         font = ImageFont.truetype(
             font_path,
-            13 * SCALE
+            20 * SCALE
         )
 
         total_font = ImageFont.truetype(
             bold_font_path,
-            13 * SCALE
+            20 * SCALE
         )
 
     except Exception as e:
 
-        print("Font loading error:", e)
+        print(
+            "Font loading error:",
+            e
+        )
 
         font = ImageFont.load_default()
         total_font = font
@@ -1102,7 +1107,7 @@ def create_quote_image(excel_path, currency_symbol):
             draw.text(
                 (
                     10 * SCALE,
-                    y1 + 8 * SCALE
+                    y1 + 12 * SCALE
                 ),
                 "Total Project Price (Ex VAT)",
                 fill="black",
@@ -1126,6 +1131,7 @@ def create_quote_image(excel_path, currency_symbol):
             if total_value is None:
                 total_value = 0
 
+            # Explicit currency symbol
             total_text = (
                 f"{currency_symbol}"
                 f"{total_value:,.2f}"
@@ -1133,8 +1139,8 @@ def create_quote_image(excel_path, currency_symbol):
 
             draw.text(
                 (
-                    (12 * cell_width) + 5 * SCALE,
-                    y1 + 8 * SCALE
+                    (12 * cell_width) + 8 * SCALE,
+                    y1 + 12 * SCALE
                 ),
                 total_text,
                 fill="white",
@@ -1199,7 +1205,6 @@ def create_quote_image(excel_path, currency_symbol):
             value = cell.value
 
             if value is None:
-
                 value = ""
 
             # =================================================
@@ -1233,10 +1238,14 @@ def create_quote_image(excel_path, currency_symbol):
 
                 value = str(value)
 
+            # =================================================
+            # DRAW TEXT
+            # =================================================
+
             draw.text(
                 (
-                    x1 + 4 * SCALE,
-                    y1 + 8 * SCALE
+                    x1 + 6 * SCALE,
+                    y1 + 12 * SCALE
                 ),
                 str(value),
                 fill="black",
@@ -1246,7 +1255,7 @@ def create_quote_image(excel_path, currency_symbol):
         image_row += 1
 
     # ========================================================
-    # SAVE HIGH-RES IMAGE
+    # SAVE
     # ========================================================
 
     image_path = (
