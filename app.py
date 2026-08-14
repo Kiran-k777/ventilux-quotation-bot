@@ -177,25 +177,17 @@ def load_data(customer_type):
 
 
 
-description_columns = [
-    "Fitting",
-    "Type",
-    "Mode",
-    "Mounting",
-    "Colour",
-    "IP",
-    "Lumens"
-]
-
-df["Product_Description"] = (
-    df[description_columns]
-    .fillna("")
-    .astype(str)
-    .agg(" ".join, axis=1)
-    .str.replace(r"\s+", " ", regex=True)
-    .str.strip()
-)
-
+    df["Product_Description"] = (
+        df[search_cols]
+        .apply(
+            lambda row: " ".join(
+                str(value).strip()
+                for value in row
+                if pd.notna(value) and str(value).strip()
+            ),
+            axis=1
+        )
+    )
 
     return df
 
