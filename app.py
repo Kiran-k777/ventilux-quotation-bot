@@ -10,10 +10,6 @@ from PIL import ImageDraw
 from PIL import ImageFont
 import fitz
 
-from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parent
-
 from reportlab.platypus import (
     SimpleDocTemplate,
     Table,
@@ -46,21 +42,19 @@ def load_data(customer_type):
 
     if customer_type == "Contractor":
 
-        file=BASE_DIR / "Base Final.xlsx"
+        file="/content/Base Final.xlsx"
 
     elif customer_type == "Wholesaler":
 
-        file=BASE_DIR / "Wholesaler 1.xlsx"
+        file="/content/Wholesaler 1.xlsx"
 
     elif customer_type == "OPW":
 
-        file=BASE_DIR / "OPW STD.xlsx"
+        file="/content/OPW STD.xlsx"
 
     else:
 
-        raise ValueError(
-            f"Unknown customer type: {customer_type}"
-        )
+        raise ValueError(f"Unknown customer type: {customer_type}")
 
 
     df=pd.read_excel(file)
@@ -177,17 +171,12 @@ def load_data(customer_type):
 
 
 
-    df["Product_Description"] = (
+    df["Product_Description"]=(
         df[search_cols]
-        .apply(
-            lambda row: " ".join(
-                str(value).strip()
-                for value in row
-                if pd.notna(value) and str(value).strip()
-            ),
-            axis=1
-        )
+        .astype(str)
+        .agg(" ".join,axis=1)
     )
+
 
     return df
 
@@ -748,7 +737,7 @@ def create_excel(quote):
 
 
     wb = load_workbook(
-        BASE_DIR / "Quote Temp.xlsx"
+        "/content/Quote Temp.xlsx"
     )
 
     ws = wb.active
@@ -852,7 +841,7 @@ def create_excel_file(quote):
 
 
     wb = load_workbook(
-        BASE_DIR / "Quote Temp.xlsx"
+        "/content/Quote Temp.xlsx"
     )
 
     ws = wb.active
@@ -987,12 +976,6 @@ def create_quote_image(excel_path, currency_symbol):
 
     ws = wb.active
 
-    # ========================================================
-    # HIGH RESOLUTION
-    # ========================================================
-
-    SCALE = 3
-
     cols = 13
 
     # Count actual product rows
@@ -1001,66 +984,46 @@ def create_quote_image(excel_path, currency_symbol):
     for r in range(2, 21):
 
         if ws[f"B{r}"].value:
+
             product_rows += 1
 
     # Header + products + commissioning + lux + total
     rows = product_rows + 4
 
-    # Larger cells
-    cell_width = 130 * SCALE
-    cell_height = 48 * SCALE
+    cell_width = 130
+    cell_height = 32
 
     img = Image.new(
+
         "RGB",
+
         (
             cols * cell_width,
             rows * cell_height
         ),
+
         "white"
+
     )
 
     draw = ImageDraw.Draw(img)
 
-    # ========================================================
-    # FONTS
-    # ========================================================
-
-    font_path = (
-        "/usr/share/fonts/truetype/liberation/"
-        "LiberationSans-Regular.ttf"
-    )
-
-    bold_font_path = (
-        "/usr/share/fonts/truetype/liberation/"
-        "LiberationSans-Bold.ttf"
-    )
-
     try:
 
-        # Much larger than before
         font = ImageFont.truetype(
-            font_path,
-            20 * SCALE
+            "DejaVuSans.ttf",
+            13
         )
 
         total_font = ImageFont.truetype(
-            bold_font_path,
-            20 * SCALE
+            "DejaVuSans-Bold.ttf",
+            13
         )
 
-    except Exception as e:
-
-        print(
-            "Font loading error:",
-            e
-        )
+    except:
 
         font = ImageFont.load_default()
         total_font = font
-
-    # ========================================================
-    # EXCEL ROWS
-    # ========================================================
 
     excel_rows = [1]
 
@@ -1068,28 +1031,18 @@ def create_quote_image(excel_path, currency_symbol):
 
         excel_rows.append(r)
 
-    excel_rows.extend(
-        [21, 22, 23]
-    )
+    excel_rows.extend([21, 22, 23])
 
     image_row = 1
 
-    # ========================================================
-    # DRAW ROWS
-    # ========================================================
-
     for excel_row in excel_rows:
 
-        y1 = (
-            image_row - 1
-        ) * cell_height
-
+        y1 = (image_row - 1) * cell_height
         y2 = y1 + cell_height
 
-        # ====================================================
-        # TOTAL ROW
-        # ====================================================
-
+        # =====================================
+        # SPECIAL TOTAL ROW (ROW 23)
+        # =====================================
         if excel_row == 23:
 
             draw.rectangle(
@@ -1101,13 +1054,13 @@ def create_quote_image(excel_path, currency_symbol):
                 ],
                 fill="#FFC000",
                 outline="black",
-                width=2 * SCALE
+                width=2
             )
 
             draw.text(
                 (
-                    10 * SCALE,
-                    y1 + 12 * SCALE
+                    10,
+                    y1 + 8
                 ),
                 "Total Project Price (Ex VAT)",
                 fill="black",
@@ -1123,7 +1076,7 @@ def create_quote_image(excel_path, currency_symbol):
                 ],
                 fill="#00B0F0",
                 outline="black",
-                width=2 * SCALE
+                width=2
             )
 
             total_value = ws["M23"].value
@@ -1131,16 +1084,12 @@ def create_quote_image(excel_path, currency_symbol):
             if total_value is None:
                 total_value = 0
 
-            # Explicit currency symbol
-            total_text = (
-                f"{currency_symbol}"
-                f"{total_value:,.2f}"
-            )
+            total_text = f"{currency_symbol}{total_value:,.2f}"
 
             draw.text(
                 (
-                    (12 * cell_width) + 8 * SCALE,
-                    y1 + 12 * SCALE
+                    (12 * cell_width) + 5,
+                    y1 + 8
                 ),
                 total_text,
                 fill="white",
@@ -1148,31 +1097,22 @@ def create_quote_image(excel_path, currency_symbol):
             )
 
             image_row += 1
-
             continue
 
-        # ====================================================
+        # =====================================
         # NORMAL ROWS
-        # ====================================================
+        # =====================================
 
         for c in range(1, cols + 1):
 
-            cell = ws.cell(
-                excel_row,
-                c
-            )
+            cell = ws.cell(excel_row, c)
 
-            x1 = (
-                c - 1
-            ) * cell_width
-
+            x1 = (c - 1) * cell_width
             x2 = x1 + cell_width
 
             colour = "white"
 
-            fill = str(
-                cell.fill.fgColor.rgb
-            )
+            fill = str(cell.fill.fgColor.rgb)
 
             if "FFC000" in fill:
 
@@ -1191,61 +1131,35 @@ def create_quote_image(excel_path, currency_symbol):
                 colour = "#00B0F0"
 
             draw.rectangle(
-                [
-                    x1,
-                    y1,
-                    x2,
-                    y2
-                ],
+                [x1, y1, x2, y2],
                 fill=colour,
                 outline="black",
-                width=2 * SCALE
+                width=2
             )
 
             value = cell.value
 
             if value is None:
+
                 value = ""
 
-            # =================================================
-            # CURRENCY COLUMNS
-            # =================================================
+            # Currency columns K and M
+            if c in [11, 13] and isinstance(value, (int, float)):
 
-            if (
-                c in [11, 13]
-                and isinstance(
-                    value,
-                    (int, float)
-                )
-            ):
+                value = f"{currency_symbol}{value:,.2f}"
 
-                value = (
-                    f"{currency_symbol}"
-                    f"{value:,.2f}"
-                )
-
-            elif isinstance(
-                value,
-                float
-            ):
+            elif isinstance(value, float):
 
                 value = f"{value:,.2f}"
 
-            elif isinstance(
-                value,
-                int
-            ):
+            elif isinstance(value, int):
 
                 value = str(value)
 
-            # =================================================
-            # DRAW TEXT
-            # =================================================
-
             draw.text(
                 (
-                    x1 + 6 * SCALE,
-                    y1 + 12 * SCALE
+                    x1 + 4,
+                    y1 + 8
                 ),
                 str(value),
                 fill="black",
@@ -1254,17 +1168,11 @@ def create_quote_image(excel_path, currency_symbol):
 
         image_row += 1
 
-    # ========================================================
-    # SAVE
-    # ========================================================
-
-    image_path = (
-        "/tmp/quotation_page.png"
-    )
+    image_path = "/tmp/quotation_page.png"
 
     img.save(
         image_path,
-        format="PNG"
+        quality=100
     )
 
     return image_path
@@ -1319,7 +1227,7 @@ def create_pdf_quote(
     # ==========================
 
     pdf = fitz.open(
-        BASE_DIR / "SAL-119-04.pdf"
+        "/content/SAL-119-04.pdf"
     )
 
     # ==========================
