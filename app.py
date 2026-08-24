@@ -10,6 +10,26 @@ from PIL import ImageDraw
 from PIL import ImageFont
 import fitz
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+def get_file(filename):
+    """Find a bundled application file in Streamlit Cloud or local execution."""
+    possible_paths = [
+        BASE_DIR / filename,
+        Path.cwd() / filename,
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(
+        f"Could not find '{filename}'. Checked: "
+        f"{[str(p) for p in possible_paths]}"
+    )
+
 from reportlab.platypus import (
     SimpleDocTemplate,
     Table,
@@ -42,19 +62,21 @@ def load_data(customer_type):
 
     if customer_type == "Contractor":
 
-        file="/content/Base Final.xlsx"
+        file=get_file("Base Final.xlsx")
 
     elif customer_type == "Wholesaler":
 
-        file="/content/Wholesaler 1.xlsx"
+        file=get_file("Wholesaler 1.xlsx")
 
     elif customer_type == "OPW":
 
-        file="/content/OPW STD.xlsx"
+        file=get_file("OPW STD.xlsx")
 
     else:
 
-        raise ValueError(f"Unknown customer type: {customer_type}")
+        raise ValueError(
+            f"Unknown customer type: {customer_type}"
+        )
 
 
     df=pd.read_excel(file)
@@ -171,12 +193,17 @@ def load_data(customer_type):
 
 
 
-    df["Product_Description"]=(
+    df["Product_Description"] = (
         df[search_cols]
-        .astype(str)
-        .agg(" ".join,axis=1)
+        .apply(
+            lambda row: " ".join(
+                str(value).strip()
+                for value in row
+                if pd.notna(value) and str(value).strip()
+            ),
+            axis=1
+        )
     )
-
 
     return df
 
@@ -735,18 +762,15 @@ def create_pdf(
 
 def create_excel(quote):
 
-
     wb = load_workbook(
-        "/content/Quote Temp.xlsx"
+        BASE_DIR / "Quote Temp.xlsx"
     )
 
     ws = wb.active
-
     row = 2
-
+    grand_total = 0
 
     for _, x in quote.iterrows():
-
         ws[f"A{row}"] = x["Ref"]
         ws[f"B{row}"] = x["Product"]
         ws[f"C{row}"] = x["Product Code"]
@@ -758,90 +782,72 @@ def create_excel(quote):
         ws[f"I{row}"] = x["Lumens"]
         ws[f"J{row}"] = x["Warranty"]
 
-
         price = float(
-
             x["Price"]
             .replace("€", "")
             .replace("£", "")
-
         )
-
+        qty = int(x["Qty"])
+        total_value = round(price * qty, 2)
+        grand_total += total_value
 
         ws[f"K{row}"] = price
-
-
-        # PRICE FORMAT
         ws[f"K{row}"].number_format = (
-
-            '£#,##0.00'
-
-            if "£" in x["Price"]
-
-            else '€#,##0.00'
-
+            '£#,##0.00' if "£" in x["Price"] else '€#,##0.00'
         )
+        ws[f"L{row}"] = qty
 
-
-        ws[f"L{row}"] = x["Qty"]
-
-
-        # TOTAL FORMULA
-        ws[f"M{row}"] = f"=K{row}*L{row}"
-
-
-        # TOTAL FORMAT
+        # Store the calculated value, not a formula.
+        # openpyxl does not calculate Excel formulas itself.
+        ws[f"M{row}"] = total_value
         ws[f"M{row}"].number_format = (
-
-            '£#,##0.00'
-
-            if "£" in x["Price"]
-
-            else '€#,##0.00'
-
+            '£#,##0.00' if "£" in x["Price"] else '€#,##0.00'
         )
-
-
         row += 1
 
+    # Clear unused product rows.
+    for r in range(row, 21):
+        for c in range(1, 14):
+            ws.cell(r, c).value = None
 
-    # GRAND TOTAL
-    ws["M23"] = "=SUM(M2:M21)"
+    ws["C21"] = "Commissioning"
+    ws["K21"] = 0
+    ws["M21"] = 0
 
+    ws["C22"] = "Lux Levels"
+    ws["K22"] = 0
+    ws["M22"] = 0
+
+    # Grand Total - actual value, not an unevaluated formula.
+    ws["A23"] = "Total Project Price (Ex VAT)"
+    ws["M23"] = grand_total
 
     last_currency = "€"
-
-    if len(quote):
-
-        if "£" in quote.iloc[0]["Price"]:
-
-            last_currency = "£"
-
+    if len(quote) and "£" in quote.iloc[0]["Price"]:
+        last_currency = "£"
 
     ws["M23"].number_format = (
-
-        '£#,##0.00'
-
-        if last_currency == "£"
-
-        else '€#,##0.00'
-
+        '£#,##0.00' if last_currency == "£" else '€#,##0.00'
     )
 
+    try:
+        wb.calculation.fullCalcOnLoad = True
+        wb.calculation.forceFullCalc = True
+        wb.calculation.calcMode = "auto"
+    except Exception:
+        pass
 
     output = BytesIO()
-
     wb.save(output)
-
     output.seek(0)
-
     return output
+
 
 def create_excel_file(quote):
 
 
     wb = load_workbook(
-        "/content/Quote Temp.xlsx"
+        BASE_DIR / "Quote Temp.xlsx"
     )
 
     ws = wb.active
@@ -976,6 +982,12 @@ def create_quote_image(excel_path, currency_symbol):
 
     ws = wb.active
 
+    # ========================================================
+    # HIGH RESOLUTION SCALE
+    # ========================================================
+
+    SCALE = 3
+
     cols = 13
 
     # Count actual product rows
@@ -984,46 +996,61 @@ def create_quote_image(excel_path, currency_symbol):
     for r in range(2, 21):
 
         if ws[f"B{r}"].value:
-
             product_rows += 1
 
     # Header + products + commissioning + lux + total
     rows = product_rows + 4
 
-    cell_width = 130
-    cell_height = 32
+    cell_width = 110 * SCALE
+    cell_height = 44 * SCALE
 
     img = Image.new(
-
         "RGB",
-
         (
             cols * cell_width,
             rows * cell_height
         ),
-
         "white"
-
     )
 
     draw = ImageDraw.Draw(img)
 
+    # ========================================================
+    # UNICODE FONT
+    # ========================================================
+
+    font_path = (
+        "/usr/share/fonts/truetype/liberation/"
+        "LiberationSans-Regular.ttf"
+    )
+
+    bold_font_path = (
+        "/usr/share/fonts/truetype/liberation/"
+        "LiberationSans-Bold.ttf"
+    )
+
     try:
 
         font = ImageFont.truetype(
-            "DejaVuSans.ttf",
-            13
+            font_path,
+            22 * SCALE
         )
 
         total_font = ImageFont.truetype(
-            "DejaVuSans-Bold.ttf",
-            13
+            bold_font_path,
+            24 * SCALE
         )
 
-    except:
+    except Exception as e:
+
+        print("Font loading error:", e)
 
         font = ImageFont.load_default()
         total_font = font
+
+    # ========================================================
+    # EXCEL ROWS
+    # ========================================================
 
     excel_rows = [1]
 
@@ -1031,18 +1058,28 @@ def create_quote_image(excel_path, currency_symbol):
 
         excel_rows.append(r)
 
-    excel_rows.extend([21, 22, 23])
+    excel_rows.extend(
+        [21, 22, 23]
+    )
 
     image_row = 1
 
+    # ========================================================
+    # DRAW ROWS
+    # ========================================================
+
     for excel_row in excel_rows:
 
-        y1 = (image_row - 1) * cell_height
+        y1 = (
+            image_row - 1
+        ) * cell_height
+
         y2 = y1 + cell_height
 
-        # =====================================
-        # SPECIAL TOTAL ROW (ROW 23)
-        # =====================================
+        # ====================================================
+        # TOTAL ROW
+        # ====================================================
+
         if excel_row == 23:
 
             draw.rectangle(
@@ -1054,13 +1091,13 @@ def create_quote_image(excel_path, currency_symbol):
                 ],
                 fill="#FFC000",
                 outline="black",
-                width=2
+                width=2 * SCALE
             )
 
             draw.text(
                 (
-                    10,
-                    y1 + 8
+                    10 * SCALE,
+                    y1 + 12 * SCALE
                 ),
                 "Total Project Price (Ex VAT)",
                 fill="black",
@@ -1076,7 +1113,7 @@ def create_quote_image(excel_path, currency_symbol):
                 ],
                 fill="#00B0F0",
                 outline="black",
-                width=2
+                width=2 * SCALE
             )
 
             total_value = ws["M23"].value
@@ -1084,12 +1121,15 @@ def create_quote_image(excel_path, currency_symbol):
             if total_value is None:
                 total_value = 0
 
-            total_text = f"{currency_symbol}{total_value:,.2f}"
+            total_text = (
+                f"{currency_symbol}"
+                f"{total_value:,.2f}"
+            )
 
             draw.text(
                 (
-                    (12 * cell_width) + 5,
-                    y1 + 8
+                    (12 * cell_width) + 5 * SCALE,
+                    y1 + 12 * SCALE
                 ),
                 total_text,
                 fill="white",
@@ -1097,22 +1137,31 @@ def create_quote_image(excel_path, currency_symbol):
             )
 
             image_row += 1
+
             continue
 
-        # =====================================
+        # ====================================================
         # NORMAL ROWS
-        # =====================================
+        # ====================================================
 
         for c in range(1, cols + 1):
 
-            cell = ws.cell(excel_row, c)
+            cell = ws.cell(
+                excel_row,
+                c
+            )
 
-            x1 = (c - 1) * cell_width
+            x1 = (
+                c - 1
+            ) * cell_width
+
             x2 = x1 + cell_width
 
             colour = "white"
 
-            fill = str(cell.fill.fgColor.rgb)
+            fill = str(
+                cell.fill.fgColor.rgb
+            )
 
             if "FFC000" in fill:
 
@@ -1131,10 +1180,15 @@ def create_quote_image(excel_path, currency_symbol):
                 colour = "#00B0F0"
 
             draw.rectangle(
-                [x1, y1, x2, y2],
+                [
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                ],
                 fill=colour,
                 outline="black",
-                width=2
+                width=2 * SCALE
             )
 
             value = cell.value
@@ -1143,23 +1197,41 @@ def create_quote_image(excel_path, currency_symbol):
 
                 value = ""
 
-            # Currency columns K and M
-            if c in [11, 13] and isinstance(value, (int, float)):
+            # =================================================
+            # CURRENCY COLUMNS
+            # =================================================
 
-                value = f"{currency_symbol}{value:,.2f}"
+            if (
+                c in [11, 13]
+                and isinstance(
+                    value,
+                    (int, float)
+                )
+            ):
 
-            elif isinstance(value, float):
+                value = (
+                    f"{currency_symbol}"
+                    f"{value:,.2f}"
+                )
+
+            elif isinstance(
+                value,
+                float
+            ):
 
                 value = f"{value:,.2f}"
 
-            elif isinstance(value, int):
+            elif isinstance(
+                value,
+                int
+            ):
 
                 value = str(value)
 
             draw.text(
                 (
-                    x1 + 4,
-                    y1 + 8
+                    x1 + 4 * SCALE,
+                    y1 + 12 * SCALE
                 ),
                 str(value),
                 fill="black",
@@ -1168,11 +1240,17 @@ def create_quote_image(excel_path, currency_symbol):
 
         image_row += 1
 
-    image_path = "/tmp/quotation_page.png"
+    # ========================================================
+    # SAVE HIGH-RES IMAGE
+    # ========================================================
+
+    image_path = (
+        "/tmp/quotation_page.png"
+    )
 
     img.save(
         image_path,
-        quality=100
+        format="PNG"
     )
 
     return image_path
@@ -1227,7 +1305,7 @@ def create_pdf_quote(
     # ==========================
 
     pdf = fitz.open(
-        "/content/SAL-119-04.pdf"
+        BASE_DIR / "SAL-119-04.pdf"
     )
 
     # ==========================
