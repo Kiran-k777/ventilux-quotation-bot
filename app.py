@@ -983,40 +983,59 @@ def create_quote_image(excel_path, currency_symbol):
     ws = wb.active
 
     # ========================================================
-    # HIGH RESOLUTION SCALE
+    # HIGH-RESOLUTION PDF TABLE
     # ========================================================
+    # The previous version used equal-width columns and a very
+    # wide image.  When that image was fitted onto an A4 page,
+    # the font became tiny.  These custom column widths make the
+    # table much more compact horizontally and therefore allow
+    # a substantially larger font in the PDF.
 
     SCALE = 3
-
     cols = 13
 
-    # Count actual product rows
+    # Widths are deliberately tailored to the quotation table.
+    # They are in logical pixels before applying SCALE.
+    column_widths = [
+        45,   # Ref
+        85,   # Product
+        115,  # Product Code
+        65,   # Type
+        80,   # Mode
+        80,   # Mounting
+        60,   # Colour
+        45,   # IP
+        65,   # Lumens
+        65,   # Warranty
+        65,   # Price
+        45,   # Qty
+        80,   # Total
+    ]
+
+    row_height = 62
+
+    # Count actual product rows.
     product_rows = 0
-
     for r in range(2, 21):
-
         if ws[f"B{r}"].value:
             product_rows += 1
 
     # Header + products + commissioning + lux + total
     rows = product_rows + 4
 
-    cell_width = 110 * SCALE
-    cell_height = 44 * SCALE
+    total_width = sum(column_widths) * SCALE
+    total_height = rows * row_height * SCALE
 
     img = Image.new(
         "RGB",
-        (
-            cols * cell_width,
-            rows * cell_height
-        ),
+        (total_width, total_height),
         "white"
     )
 
     draw = ImageDraw.Draw(img)
 
     # ========================================================
-    # UNICODE FONT
+    # UNICODE FONTS
     # ========================================================
 
     font_path = (
@@ -1030,23 +1049,106 @@ def create_quote_image(excel_path, currency_symbol):
     )
 
     try:
-
+        # Larger PDF text.  The image is high resolution, so the
+        # final PDF text remains sharp after scaling.
         font = ImageFont.truetype(
             font_path,
-            22 * SCALE
+            28 * SCALE
+        )
+
+        header_font = ImageFont.truetype(
+            bold_font_path,
+            27 * SCALE
         )
 
         total_font = ImageFont.truetype(
             bold_font_path,
-            24 * SCALE
+            30 * SCALE
         )
 
     except Exception as e:
-
         print("Font loading error:", e)
-
         font = ImageFont.load_default()
+        header_font = font
         total_font = font
+
+    def wrap_text(text, font, max_width):
+        """Wrap text to fit inside a table cell."""
+        text = str(text).strip()
+        if not text:
+            return [""]
+
+        words = text.split()
+        lines = []
+        current = ""
+
+        for word in words:
+            test = word if not current else current + " " + word
+            bbox = draw.textbbox((0, 0), test, font=font)
+            width = bbox[2] - bbox[0]
+
+            if width <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+
+        if current:
+            lines.append(current)
+
+        # Avoid excessively tall cells.  If there is still too much
+        # text, keep the first two lines and add an ellipsis.
+        if len(lines) > 2:
+            lines = lines[:2]
+            last = lines[-1]
+            while last and draw.textbbox(
+                (0, 0), last + "...", font=font
+            )[2] > max_width:
+                last = last[:-1]
+            lines[-1] = last.rstrip() + "..."
+
+        return lines or [""]
+
+    def draw_cell_text(value, x1, y1, width, height, cell_font, align="left"):
+        value = "" if value is None else str(value)
+        padding = 5 * SCALE
+        max_width = width - (2 * padding)
+        lines = wrap_text(value, cell_font, max_width)
+
+        line_bbox = draw.textbbox(
+            (0, 0),
+            "Ag",
+            font=cell_font
+        )
+        line_height = line_bbox[3] - line_bbox[1]
+        spacing = 2 * SCALE
+        text_height = len(lines) * line_height + (len(lines) - 1) * spacing
+        y = y1 + max(0, (height - text_height) / 2)
+
+        for line in lines:
+            bbox = draw.textbbox(
+                (0, 0),
+                line,
+                font=cell_font
+            )
+            text_width = bbox[2] - bbox[0]
+
+            if align == "center":
+                x = x1 + (width - text_width) / 2
+            elif align == "right":
+                x = x1 + width - padding - text_width
+            else:
+                x = x1 + padding
+
+            draw.text(
+                (x, y),
+                line,
+                fill="black",
+                font=cell_font
+            )
+
+            y += line_height + spacing
 
     # ========================================================
     # EXCEL ROWS
@@ -1055,26 +1157,16 @@ def create_quote_image(excel_path, currency_symbol):
     excel_rows = [1]
 
     for r in range(2, 2 + product_rows):
-
         excel_rows.append(r)
 
-    excel_rows.extend(
-        [21, 22, 23]
-    )
+    excel_rows.extend([21, 22, 23])
 
     image_row = 1
 
-    # ========================================================
-    # DRAW ROWS
-    # ========================================================
-
     for excel_row in excel_rows:
 
-        y1 = (
-            image_row - 1
-        ) * cell_height
-
-        y2 = y1 + cell_height
+        y1 = (image_row - 1) * row_height * SCALE
+        y2 = y1 + row_height * SCALE
 
         # ====================================================
         # TOTAL ROW
@@ -1082,161 +1174,122 @@ def create_quote_image(excel_path, currency_symbol):
 
         if excel_row == 23:
 
+            # Total label area.
+            label_width = sum(column_widths[:12]) * SCALE
+
             draw.rectangle(
-                [
-                    0,
-                    y1,
-                    12 * cell_width,
-                    y2
-                ],
+                [0, y1, label_width, y2],
                 fill="#FFC000",
                 outline="black",
                 width=2 * SCALE
             )
 
-            draw.text(
-                (
-                    10 * SCALE,
-                    y1 + 12 * SCALE
-                ),
+            draw_cell_text(
                 "Total Project Price (Ex VAT)",
-                fill="black",
-                font=total_font
+                0,
+                y1,
+                label_width,
+                row_height * SCALE,
+                total_font,
+                align="center"
             )
 
+            # Total value area.
+            value_x = label_width
+            value_width = column_widths[12] * SCALE
+
             draw.rectangle(
-                [
-                    12 * cell_width,
-                    y1,
-                    13 * cell_width,
-                    y2
-                ],
+                [value_x, y1, value_x + value_width, y2],
                 fill="#00B0F0",
                 outline="black",
                 width=2 * SCALE
             )
 
             total_value = ws["M23"].value
-
             if total_value is None:
                 total_value = 0
 
-            total_text = (
-                f"{currency_symbol}"
-                f"{total_value:,.2f}"
-            )
+            total_text = f"{currency_symbol}{float(total_value):,.2f}"
 
-            draw.text(
-                (
-                    (12 * cell_width) + 5 * SCALE,
-                    y1 + 12 * SCALE
-                ),
+            draw_cell_text(
                 total_text,
-                fill="white",
-                font=total_font
+                value_x,
+                y1,
+                value_width,
+                row_height * SCALE,
+                total_font,
+                align="center"
             )
 
             image_row += 1
-
             continue
 
         # ====================================================
         # NORMAL ROWS
         # ====================================================
 
+        x_cursor = 0
+
         for c in range(1, cols + 1):
 
-            cell = ws.cell(
-                excel_row,
-                c
-            )
-
-            x1 = (
-                c - 1
-            ) * cell_width
-
-            x2 = x1 + cell_width
+            cell = ws.cell(excel_row, c)
+            width = column_widths[c - 1] * SCALE
+            x1 = x_cursor
+            x2 = x1 + width
 
             colour = "white"
-
-            fill = str(
-                cell.fill.fgColor.rgb
-            )
+            fill = str(cell.fill.fgColor.rgb)
 
             if "FFC000" in fill:
-
                 colour = "#FFC000"
-
             elif "FFFF00" in fill:
-
                 colour = "#FFFF00"
-
             elif "D9D9D9" in fill:
-
                 colour = "#D9D9D9"
-
             elif "00B0F0" in fill:
-
                 colour = "#00B0F0"
 
             draw.rectangle(
-                [
-                    x1,
-                    y1,
-                    x2,
-                    y2
-                ],
+                [x1, y1, x2, y2],
                 fill=colour,
                 outline="black",
                 width=2 * SCALE
             )
 
             value = cell.value
-
             if value is None:
-
                 value = ""
 
-            # =================================================
-            # CURRENCY COLUMNS
-            # =================================================
-
+            # Currency columns.
             if (
                 c in [11, 13]
-                and isinstance(
-                    value,
-                    (int, float)
-                )
+                and isinstance(value, (int, float))
             ):
-
-                value = (
-                    f"{currency_symbol}"
-                    f"{value:,.2f}"
-                )
-
-            elif isinstance(
-                value,
-                float
-            ):
-
+                value = f"{currency_symbol}{value:,.2f}"
+            elif isinstance(value, float):
                 value = f"{value:,.2f}"
-
-            elif isinstance(
-                value,
-                int
-            ):
-
+            elif isinstance(value, int):
                 value = str(value)
 
-            draw.text(
-                (
-                    x1 + 4 * SCALE,
-                    y1 + 12 * SCALE
-                ),
-                str(value),
-                fill="black",
-                font=font
+            # Header row is bold; numeric/currency columns are centred.
+            cell_font = header_font if excel_row == 1 else font
+
+            if c in [1, 8, 9, 10, 11, 12, 13]:
+                alignment = "center"
+            else:
+                alignment = "left"
+
+            draw_cell_text(
+                value,
+                x1,
+                y1,
+                width,
+                row_height * SCALE,
+                cell_font,
+                align=alignment
             )
+
+            x_cursor = x2
 
         image_row += 1
 
@@ -1244,9 +1297,7 @@ def create_quote_image(excel_path, currency_symbol):
     # SAVE HIGH-RES IMAGE
     # ========================================================
 
-    image_path = (
-        "/tmp/quotation_page.png"
-    )
+    image_path = "/tmp/quotation_page.png"
 
     img.save(
         image_path,
@@ -1384,9 +1435,9 @@ def create_pdf_quote(
 
     rect = fitz.Rect(
         10,
-        90,
-        585,
-        740
+        210,
+        602,
+        650
     )
 
     page3.insert_image(
