@@ -1012,7 +1012,7 @@ def create_quote_image(excel_path, currency_symbol):
         80,   # Total
     ]
 
-    row_height = 62
+    row_height = 72
 
     # Count actual product rows.
     product_rows = 0
@@ -1053,17 +1053,17 @@ def create_quote_image(excel_path, currency_symbol):
         # final PDF text remains sharp after scaling.
         font = ImageFont.truetype(
             font_path,
-            28 * SCALE
+            38 * SCALE
         )
 
         header_font = ImageFont.truetype(
             bold_font_path,
-            27 * SCALE
+            37 * SCALE
         )
 
         total_font = ImageFont.truetype(
             bold_font_path,
-            30 * SCALE
+            42 * SCALE
         )
 
     except Exception as e:
@@ -1434,10 +1434,10 @@ def create_pdf_quote(
     page3 = pdf[2]
 
     rect = fitz.Rect(
-        10,
-        210,
-        602,
-        650
+        8,
+        135,
+        604,
+        760
     )
 
     page3.insert_image(
