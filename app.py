@@ -8,10 +8,13 @@ from datetime import date
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
-import fitz
+import pymupdf as fitz
+
 
 from pathlib import Path
 
+# Streamlit Community Cloud: use the directory containing this app.py
+# for bundled Excel and PDF template files.
 BASE_DIR = Path(__file__).resolve().parent
 
 def get_file(filename):
@@ -239,11 +242,36 @@ def clean_code(x):
 # MATCH PRODUCT
 # ==========================
 
+def normalise_product_word(word):
+    """
+    Normalise common English plural forms so employee input such as
+    'Fusions' matches the singular product name 'Fusion'.
+    """
+    word = str(word).lower().strip()
+
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+
+    if len(word) > 4 and word.endswith("es"):
+        stem = word[:-2]
+        if stem.endswith(("s", "x", "z", "ch", "sh")):
+            return stem
+
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+
+    return word
+
+
+def normalise_product_text(value):
+    """Lowercase text, remove punctuation and normalise plural words."""
+    words = re.findall(r"[a-z0-9]+", str(value).lower())
+    return " ".join(normalise_product_word(word) for word in words)
+
+
 def match_product(text,df):
 
-
     search=text.lower()
-
 
     search=re.sub(
         r'^\s*\d+\s*x\s*',
@@ -251,108 +279,64 @@ def match_product(text,df):
         search
     ).strip()
 
-
-
     code_search=clean_code(search)
-
-
 
     df["clean_code"]=(
         df["Product Code"]
         .apply(clean_code)
     )
 
-
+    # Keep the existing exact/partial product-code matching.
     result=df[
-
-        df["clean_code"]
-        .str.contains(
+        df["clean_code"].str.contains(
             code_search,
             na=False
         )
-
     ]
 
-
-
     if len(result):
-
         return result.iloc[0]
 
-
-
+    # Keep the existing fuzzy product-code matching.
     best=None
-
     best_score=0
-
-
 
     for _,row in df.iterrows():
 
         score=SequenceMatcher(
-
             None,
             code_search,
             row["clean_code"]
-
         ).ratio()
 
-
-
         if score>best_score:
-
             best_score=score
             best=row
 
-
-
     if best_score>=0.75:
-
         return best
 
-
+    # Match descriptions after normalising singular/plural words.
+    # Examples: "Fusions" -> "fusion", "Evoluxes" -> "evolux".
+    search_words=normalise_product_text(search).split()
+    search_set=set(search_words)
 
     temp=df.copy()
-
-
-
-    temp["score"]=(
-
-        temp["Product_Description"]
-        .str.lower()
-        .apply(
-
-            lambda x:
-
-            sum(
-
-                w in x
-                for w in search.split()
-
-            )
-
-        )
-
+    temp["_normalised_description"]=(
+        temp["Product_Description"].apply(normalise_product_text)
     )
 
+    def description_score(description):
+        description_words=set(description.split())
+        return sum(word in description_words for word in search_set)
 
+    temp["score"]=temp["_normalised_description"].apply(description_score)
+    temp=temp.sort_values("score", ascending=False)
 
-    temp=temp.sort_values(
-
-        "score",
-        ascending=False
-
-    )
-
-
-
-    if temp.iloc[0]["score"]==0:
-
+    if temp.empty or temp.iloc[0]["score"]==0:
         return None
 
-
     return temp.iloc[0]
-
 
 
 
@@ -441,52 +425,65 @@ def create_quote(
 
         else:
 
+            # Wholesaler pricing has separate prices for:
+            #   4 Years: 1-49 / 50+
+            #   8 Years: 1-49 / 50+
+            #
+            # If the requested warranty is unavailable for the
+            # selected quantity tier, automatically use the other
+            # warranty for THE SAME quantity tier.
+            #
+            # Example:
+            #   Customer asks for 4 Years, qty >= 50
+            #   4-year 50+ price missing
+            #   -> use 8-year 50+ price.
+            #
+            # This is important because falling back to the 1-49
+            # price would give the wrong wholesaler price.
 
             if qty < 50:
 
+                if warranty == "4 Years":
 
-                if warranty=="4 Years":
+                    price = product["Price_4_1_49"]
+                    used = "4 Years"
 
-                    price=product["Price_4_1_49"]
-                    used="4 Years"
+                    if price == 0:
+
+                        price = product["Price_8_1_49"]
+                        used = "8 Years"
 
                 else:
 
-                    price=product["Price_8_1_49"]
-                    used="8 Years"
+                    price = product["Price_8_1_49"]
+                    used = "8 Years"
 
+                    if price == 0:
 
+                        price = product["Price_4_1_49"]
+                        used = "4 Years"
 
             else:
 
+                if warranty == "4 Years":
 
-                if warranty=="4 Years":
+                    price = product["Price_4_50"]
+                    used = "4 Years"
 
-                    price=product["Price_4_50"]
-                    used="4 Years"
+                    if price == 0:
 
-
-                else:
-
-                    price=product["Price_8_50"]
-                    used="8 Years"
-
-
-
-
-            if price==0:
-
-
-                if warranty=="4 Years":
-
-                    price=product["Price_8_1_49"]
-                    used="8 Years"
-
+                        price = product["Price_8_50"]
+                        used = "8 Years"
 
                 else:
 
-                    price=product["Price_4_1_49"]
-                    used="4 Years"
+                    price = product["Price_8_50"]
+                    used = "8 Years"
+
+                    if price == 0:
+
+                        price = product["Price_4_50"]
+                        used = "4 Years"
 
 
 
@@ -983,59 +980,40 @@ def create_quote_image(excel_path, currency_symbol):
     ws = wb.active
 
     # ========================================================
-    # HIGH-RESOLUTION PDF TABLE
+    # HIGH RESOLUTION SCALE
     # ========================================================
-    # The previous version used equal-width columns and a very
-    # wide image.  When that image was fitted onto an A4 page,
-    # the font became tiny.  These custom column widths make the
-    # table much more compact horizontally and therefore allow
-    # a substantially larger font in the PDF.
 
     SCALE = 3
+
     cols = 13
 
-    # Widths are deliberately tailored to the quotation table.
-    # They are in logical pixels before applying SCALE.
-    column_widths = [
-        45,   # Ref
-        85,   # Product
-        115,  # Product Code
-        65,   # Type
-        80,   # Mode
-        80,   # Mounting
-        60,   # Colour
-        45,   # IP
-        65,   # Lumens
-        65,   # Warranty
-        65,   # Price
-        45,   # Qty
-        80,   # Total
-    ]
-
-    row_height = 72
-
-    # Count actual product rows.
+    # Count actual product rows
     product_rows = 0
+
     for r in range(2, 21):
+
         if ws[f"B{r}"].value:
             product_rows += 1
 
     # Header + products + commissioning + lux + total
     rows = product_rows + 4
 
-    total_width = sum(column_widths) * SCALE
-    total_height = rows * row_height * SCALE
+    cell_width = 110 * SCALE
+    cell_height = 44 * SCALE
 
     img = Image.new(
         "RGB",
-        (total_width, total_height),
+        (
+            cols * cell_width,
+            rows * cell_height
+        ),
         "white"
     )
 
     draw = ImageDraw.Draw(img)
 
     # ========================================================
-    # UNICODE FONTS
+    # UNICODE FONT
     # ========================================================
 
     font_path = (
@@ -1049,106 +1027,23 @@ def create_quote_image(excel_path, currency_symbol):
     )
 
     try:
-        # Larger PDF text.  The image is high resolution, so the
-        # final PDF text remains sharp after scaling.
+
         font = ImageFont.truetype(
             font_path,
-            38 * SCALE
-        )
-
-        header_font = ImageFont.truetype(
-            bold_font_path,
-            37 * SCALE
+            22 * SCALE
         )
 
         total_font = ImageFont.truetype(
             bold_font_path,
-            42 * SCALE
+            24 * SCALE
         )
 
     except Exception as e:
+
         print("Font loading error:", e)
+
         font = ImageFont.load_default()
-        header_font = font
         total_font = font
-
-    def wrap_text(text, font, max_width):
-        """Wrap text to fit inside a table cell."""
-        text = str(text).strip()
-        if not text:
-            return [""]
-
-        words = text.split()
-        lines = []
-        current = ""
-
-        for word in words:
-            test = word if not current else current + " " + word
-            bbox = draw.textbbox((0, 0), test, font=font)
-            width = bbox[2] - bbox[0]
-
-            if width <= max_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-
-        if current:
-            lines.append(current)
-
-        # Avoid excessively tall cells.  If there is still too much
-        # text, keep the first two lines and add an ellipsis.
-        if len(lines) > 2:
-            lines = lines[:2]
-            last = lines[-1]
-            while last and draw.textbbox(
-                (0, 0), last + "...", font=font
-            )[2] > max_width:
-                last = last[:-1]
-            lines[-1] = last.rstrip() + "..."
-
-        return lines or [""]
-
-    def draw_cell_text(value, x1, y1, width, height, cell_font, align="left"):
-        value = "" if value is None else str(value)
-        padding = 5 * SCALE
-        max_width = width - (2 * padding)
-        lines = wrap_text(value, cell_font, max_width)
-
-        line_bbox = draw.textbbox(
-            (0, 0),
-            "Ag",
-            font=cell_font
-        )
-        line_height = line_bbox[3] - line_bbox[1]
-        spacing = 2 * SCALE
-        text_height = len(lines) * line_height + (len(lines) - 1) * spacing
-        y = y1 + max(0, (height - text_height) / 2)
-
-        for line in lines:
-            bbox = draw.textbbox(
-                (0, 0),
-                line,
-                font=cell_font
-            )
-            text_width = bbox[2] - bbox[0]
-
-            if align == "center":
-                x = x1 + (width - text_width) / 2
-            elif align == "right":
-                x = x1 + width - padding - text_width
-            else:
-                x = x1 + padding
-
-            draw.text(
-                (x, y),
-                line,
-                fill="black",
-                font=cell_font
-            )
-
-            y += line_height + spacing
 
     # ========================================================
     # EXCEL ROWS
@@ -1157,16 +1052,26 @@ def create_quote_image(excel_path, currency_symbol):
     excel_rows = [1]
 
     for r in range(2, 2 + product_rows):
+
         excel_rows.append(r)
 
-    excel_rows.extend([21, 22, 23])
+    excel_rows.extend(
+        [21, 22, 23]
+    )
 
     image_row = 1
 
+    # ========================================================
+    # DRAW ROWS
+    # ========================================================
+
     for excel_row in excel_rows:
 
-        y1 = (image_row - 1) * row_height * SCALE
-        y2 = y1 + row_height * SCALE
+        y1 = (
+            image_row - 1
+        ) * cell_height
+
+        y2 = y1 + cell_height
 
         # ====================================================
         # TOTAL ROW
@@ -1174,122 +1079,161 @@ def create_quote_image(excel_path, currency_symbol):
 
         if excel_row == 23:
 
-            # Total label area.
-            label_width = sum(column_widths[:12]) * SCALE
-
             draw.rectangle(
-                [0, y1, label_width, y2],
+                [
+                    0,
+                    y1,
+                    12 * cell_width,
+                    y2
+                ],
                 fill="#FFC000",
                 outline="black",
                 width=2 * SCALE
             )
 
-            draw_cell_text(
+            draw.text(
+                (
+                    10 * SCALE,
+                    y1 + 12 * SCALE
+                ),
                 "Total Project Price (Ex VAT)",
-                0,
-                y1,
-                label_width,
-                row_height * SCALE,
-                total_font,
-                align="center"
+                fill="black",
+                font=total_font
             )
 
-            # Total value area.
-            value_x = label_width
-            value_width = column_widths[12] * SCALE
-
             draw.rectangle(
-                [value_x, y1, value_x + value_width, y2],
+                [
+                    12 * cell_width,
+                    y1,
+                    13 * cell_width,
+                    y2
+                ],
                 fill="#00B0F0",
                 outline="black",
                 width=2 * SCALE
             )
 
             total_value = ws["M23"].value
+
             if total_value is None:
                 total_value = 0
 
-            total_text = f"{currency_symbol}{float(total_value):,.2f}"
+            total_text = (
+                f"{currency_symbol}"
+                f"{total_value:,.2f}"
+            )
 
-            draw_cell_text(
+            draw.text(
+                (
+                    (12 * cell_width) + 5 * SCALE,
+                    y1 + 12 * SCALE
+                ),
                 total_text,
-                value_x,
-                y1,
-                value_width,
-                row_height * SCALE,
-                total_font,
-                align="center"
+                fill="white",
+                font=total_font
             )
 
             image_row += 1
+
             continue
 
         # ====================================================
         # NORMAL ROWS
         # ====================================================
 
-        x_cursor = 0
-
         for c in range(1, cols + 1):
 
-            cell = ws.cell(excel_row, c)
-            width = column_widths[c - 1] * SCALE
-            x1 = x_cursor
-            x2 = x1 + width
+            cell = ws.cell(
+                excel_row,
+                c
+            )
+
+            x1 = (
+                c - 1
+            ) * cell_width
+
+            x2 = x1 + cell_width
 
             colour = "white"
-            fill = str(cell.fill.fgColor.rgb)
+
+            fill = str(
+                cell.fill.fgColor.rgb
+            )
 
             if "FFC000" in fill:
+
                 colour = "#FFC000"
+
             elif "FFFF00" in fill:
+
                 colour = "#FFFF00"
+
             elif "D9D9D9" in fill:
+
                 colour = "#D9D9D9"
+
             elif "00B0F0" in fill:
+
                 colour = "#00B0F0"
 
             draw.rectangle(
-                [x1, y1, x2, y2],
+                [
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                ],
                 fill=colour,
                 outline="black",
                 width=2 * SCALE
             )
 
             value = cell.value
+
             if value is None:
+
                 value = ""
 
-            # Currency columns.
+            # =================================================
+            # CURRENCY COLUMNS
+            # =================================================
+
             if (
                 c in [11, 13]
-                and isinstance(value, (int, float))
+                and isinstance(
+                    value,
+                    (int, float)
+                )
             ):
-                value = f"{currency_symbol}{value:,.2f}"
-            elif isinstance(value, float):
+
+                value = (
+                    f"{currency_symbol}"
+                    f"{value:,.2f}"
+                )
+
+            elif isinstance(
+                value,
+                float
+            ):
+
                 value = f"{value:,.2f}"
-            elif isinstance(value, int):
+
+            elif isinstance(
+                value,
+                int
+            ):
+
                 value = str(value)
 
-            # Header row is bold; numeric/currency columns are centred.
-            cell_font = header_font if excel_row == 1 else font
-
-            if c in [1, 8, 9, 10, 11, 12, 13]:
-                alignment = "center"
-            else:
-                alignment = "left"
-
-            draw_cell_text(
-                value,
-                x1,
-                y1,
-                width,
-                row_height * SCALE,
-                cell_font,
-                align=alignment
+            draw.text(
+                (
+                    x1 + 4 * SCALE,
+                    y1 + 12 * SCALE
+                ),
+                str(value),
+                fill="black",
+                font=font
             )
-
-            x_cursor = x2
 
         image_row += 1
 
@@ -1297,7 +1241,9 @@ def create_quote_image(excel_path, currency_symbol):
     # SAVE HIGH-RES IMAGE
     # ========================================================
 
-    image_path = "/tmp/quotation_page.png"
+    image_path = (
+        "/tmp/quotation_page.png"
+    )
 
     img.save(
         image_path,
@@ -1311,14 +1257,21 @@ def create_pdf_quote(
     project_name,
     region
 ):
+    """
+    Create the final quotation PDF.
+
+    Page 1, 2 and 4 come from the existing Ventilux template.
+    Page 3 is drawn as real PDF text/vector cells rather than a
+    rasterized PNG. This keeps the text sharp and makes € / £
+    render correctly using an embedded Unicode font.
+    """
 
     from datetime import datetime
     from io import BytesIO
-    from PIL import Image
 
-    # ==========================
-    # DETERMINE CURRENCY
-    # ==========================
+    # ==========================================================
+    # CURRENCY
+    # ==========================================================
 
     currency_symbol = (
         "£"
@@ -1326,42 +1279,17 @@ def create_pdf_quote(
         else "€"
     )
 
-    # ==========================
-    # CREATE EXCEL FILE
-    # ==========================
-
-    excel_path = create_excel_file(
-        quote
-    )
-
-    # ==========================
-    # CREATE IMAGE
-    # ==========================
-
-    image_path = create_quote_image(
-        excel_path,
-        currency_symbol
-    )
-
-    img = Image.open(image_path)
-
-    print(
-        "QUOTE IMAGE SIZE:",
-        img.width,
-        img.height
-    )
-
-    # ==========================
+    # ==========================================================
     # OPEN TEMPLATE
-    # ==========================
+    # ==========================================================
 
     pdf = fitz.open(
-        BASE_DIR / "SAL-119-04.pdf"
+        get_file("SAL-119-04.pdf")
     )
 
-    # ==========================
-    # COVER PAGE
-    # ==========================
+    # ==========================================================
+    # PAGE 1 - COVER
+    # ==========================================================
 
     page = pdf[0]
 
@@ -1370,45 +1298,27 @@ def create_pdf_quote(
     )
 
     # Remove existing values
-
     page.draw_rect(
-        fitz.Rect(
-            300,
-            655,
-            520,
-            680
-        ),
+        fitz.Rect(300, 655, 520, 680),
         fill=(0, 0, 0),
         color=(0, 0, 0)
     )
 
     page.draw_rect(
-        fitz.Rect(
-            300,
-            685,
-            560,
-            710
-        ),
+        fitz.Rect(300, 685, 560, 710),
         fill=(0, 0, 0),
         color=(0, 0, 0)
     )
 
     page.draw_rect(
-        fitz.Rect(
-            300,
-            715,
-            520,
-            740
-        ),
+        fitz.Rect(300, 715, 520, 740),
         fill=(0, 0, 0),
         color=(0, 0, 0)
     )
-
-    # Insert new values
 
     page.insert_text(
         (305, 676),
-        project_name,
+        str(project_name),
         fontsize=10,
         color=(1, 1, 1)
     )
@@ -1427,32 +1337,453 @@ def create_pdf_quote(
         color=(1, 1, 1)
     )
 
-    # ==========================
-    # PAGE 3
-    # ==========================
+    # ==========================================================
+    # PAGE 3 - REAL VECTOR/TEXT TABLE
+    # ==========================================================
 
     page3 = pdf[2]
 
-    rect = fitz.Rect(
-        8,
-        135,
-        604,
-        760
+    # Use a Unicode font so both € and £ are embedded correctly.
+    font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+
+    bold_font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+
+    font_path = next(
+        (p for p in font_candidates if Path(p).exists()),
+        None
     )
 
-    page3.insert_image(
+    bold_font_path = next(
+        (p for p in bold_font_candidates if Path(p).exists()),
+        None
+    )
+
+    if not font_path:
+        raise FileNotFoundError(
+            "A Unicode PDF font could not be found. "
+            "DejaVu Sans or Liberation Sans is required "
+            "to render € and £ correctly."
+        )
+
+    if not bold_font_path:
+        bold_font_path = font_path
+
+    # ==========================================================
+    # TABLE DATA
+    # ==========================================================
+
+    headers = [
+        "Ref",
+        "Product",
+        "Product Code",
+        "Type",
+        "Mode",
+        "Mounting",
+        "Colour",
+        "IP",
+        "Lumens",
+        "Warranty",
+        "Price",
+        "Qty",
+        "Total"
+    ]
+
+    rows = [headers]
+
+    for _, x in quote.iterrows():
+
+        rows.append([
+            str(x.get("Ref", "")),
+            str(x.get("Product", "")),
+            str(x.get("Product Code", "")),
+            str(x.get("Type", "")),
+            str(x.get("Mode", "")),
+            str(x.get("Mounting", "")),
+            str(x.get("Colour", "")),
+            str(x.get("IP", "")),
+            str(x.get("Lumens", "")),
+            str(x.get("Warranty", "")),
+            str(x.get("Price", "")),
+            str(x.get("Qty", "")),
+            str(x.get("Total", ""))
+        ])
+
+    # ==========================================================
+    # COMMISSIONING / LUX / TOTAL
+    # ==========================================================
+
+    commissioning_value = 0.0
+    lux_value = 0.0
+
+    rows.append([
+        "",
+        "",
+        "Commissioning",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f"{currency_symbol}{commissioning_value:,.2f}",
+        "",
+        f"{currency_symbol}{commissioning_value:,.2f}"
+    ])
+
+    rows.append([
+        "",
+        "",
+        "Lux Levels",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f"{currency_symbol}{lux_value:,.2f}",
+        "",
+        f"{currency_symbol}{lux_value:,.2f}"
+    ])
+
+    grand_total = 0.0
+
+    for value in quote["Total"]:
+        try:
+            grand_total += float(
+                str(value)
+                .replace("€", "")
+                .replace("£", "")
+                .replace(",", "")
+                .strip()
+            )
+        except (ValueError, TypeError):
+            pass
+
+    rows.append([
+        "TOTAL",
+        "",
+        "Total Project Price (Ex VAT)",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f"{currency_symbol}{grand_total:,.2f}"
+    ])
+
+    # ==========================================================
+    # TABLE GEOMETRY
+    # ==========================================================
+
+    # A4 page width is ~595 points.
+    # These widths total 575 points and leave a 10pt margin each side.
+    col_widths = [
+        22,   # Ref
+        68,   # Product - wider so names stay on one line
+        74,   # Product Code
+        42,   # Type
+        62,   # Mode - wider for "Non-Maintained"
+        52,   # Mounting
+        38,   # Colour
+        20,   # IP
+        44,   # Lumens
+        35,   # Warranty
+        42,   # Price
+        28,   # Qty
+        48    # Total
+    ]
+
+    table_x = 10
+    table_y = 125
+
+    header_height = 30
+    normal_row_height = 28
+    special_row_height = 28
+    total_row_height = 32
+
+    # ==========================================================
+    # PDF FONT HELPERS
+    # ==========================================================
+
+    regular_font = fitz.Font(
+        fontfile=font_path
+    )
+
+    bold_font = fitz.Font(
+        fontfile=bold_font_path
+    )
+
+    def wrap_text(value, max_width, font_obj, fontsize):
+        """
+        Wrap text by measured PDF width, including long product codes
+        that do not contain spaces.
+        """
+
+        value = str(value).strip()
+
+        if not value:
+            return [""]
+
+        lines = []
+        current = ""
+
+        for char in value:
+
+            candidate = current + char
+
+            try:
+                width = font_obj.text_length(
+                    candidate,
+                    fontsize=fontsize
+                )
+            except Exception:
+                width = len(candidate) * fontsize * 0.55
+
+            if current and width > max_width:
+                lines.append(current)
+                current = char
+            else:
+                current = candidate
+
+        if current:
+            lines.append(current)
+
+        return lines or [""]
+
+    def draw_cell(
         rect,
-        filename=image_path
-    )
+        value,
+        font_obj,
+        fontsize,
+        fill,
+        text_color=(0, 0, 0),
+        align=0,
+        bold=False
+    ):
+        page3.draw_rect(
+            rect,
+            fill=fill,
+            color=(0, 0, 0),
+            width=0.6
+        )
 
-    # ==========================
-    # SAVE PDF
-    # ==========================
+        padding = 3
+
+        text_rect = fitz.Rect(
+            rect.x0 + padding,
+            rect.y0 + padding,
+            rect.x1 - padding,
+            rect.y1 - padding
+        )
+
+        lines = wrap_text(
+            value,
+            max(5, text_rect.width),
+            font_obj,
+            fontsize
+        )
+
+        line_height = fontsize + 1.2
+        max_lines = max(
+            1,
+            int(text_rect.height // line_height)
+        )
+
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+
+            if lines:
+                last = lines[-1]
+
+                while last and font_obj.text_length(
+                    last + "...",
+                    fontsize=fontsize
+                ) > text_rect.width:
+                    last = last[:-1]
+
+                lines[-1] = last + "..."
+
+        total_height = len(lines) * line_height
+
+        start_y = (
+            text_rect.y0
+            + max(
+                0,
+                (text_rect.height - total_height) / 2
+            )
+        )
+
+        for line in lines:
+
+            try:
+                line_width = font_obj.text_length(
+                    line,
+                    fontsize=fontsize
+                )
+            except Exception:
+                line_width = len(line) * fontsize * 0.55
+
+            if align == 1:
+                x = (
+                    text_rect.x0
+                    + (text_rect.width - line_width) / 2
+                )
+            elif align == 2:
+                x = (
+                    text_rect.x1
+                    - line_width
+                )
+            else:
+                x = text_rect.x0
+
+            page3.insert_text(
+                (x, start_y + fontsize),
+                line,
+                fontsize=fontsize,
+                fontname="DejaVuSans",
+                fontfile=(
+                    bold_font_path
+                    if bold
+                    else font_path
+                ),
+                color=text_color
+            )
+
+            start_y += line_height
+
+    # ==========================================================
+    # DRAW TABLE
+    # ==========================================================
+
+    y = table_y
+
+    for row_index, row_data in enumerate(rows):
+
+        if row_index == 0:
+
+            row_height = header_height
+            fontsize = 6.8
+            row_fill = (1.0, 0.67, 0.0)
+            font_obj = bold_font
+
+        elif row_index == len(rows) - 1:
+
+            row_height = total_row_height
+            fontsize = 7.4
+            row_fill = (1.0, 0.67, 0.0)
+            font_obj = bold_font
+
+        elif row_index >= len(rows) - 3:
+
+            row_height = special_row_height
+            fontsize = 6.8
+            row_fill = (1.0, 1.0, 0.0)
+            font_obj = regular_font
+
+        else:
+
+            row_height = normal_row_height
+            fontsize = 6.8
+            row_fill = (1.0, 1.0, 1.0)
+            font_obj = regular_font
+
+        if row_index == len(rows) - 1:
+
+            merged_width = sum(col_widths[:12])
+
+            label_rect = fitz.Rect(
+                table_x,
+                y,
+                table_x + merged_width,
+                y + row_height
+            )
+
+            draw_cell(
+                label_rect,
+                "Total Project Price (Ex VAT)",
+                bold_font,
+                7.2,
+                (1.0, 0.67, 0.0),
+                align=1,
+                bold=True
+            )
+
+            total_rect = fitz.Rect(
+                table_x + merged_width,
+                y,
+                table_x + merged_width + col_widths[12],
+                y + row_height
+            )
+
+            draw_cell(
+                total_rect,
+                row_data[12],
+                bold_font,
+                7.4,
+                (0.0, 0.69, 0.94),
+                text_color=(1, 1, 1),
+                align=2,
+                bold=True
+            )
+
+        else:
+
+            x = table_x
+
+            for col_index, value in enumerate(row_data):
+
+                width = col_widths[col_index]
+
+                rect = fitz.Rect(
+                    x,
+                    y,
+                    x + width,
+                    y + row_height
+                )
+
+                # Currency / quantity / short numeric fields centered.
+                centered = col_index in [
+                    0, 7, 8, 9, 10, 11, 12
+                ]
+
+                draw_cell(
+                    rect,
+                    value,
+                    font_obj,
+                    fontsize,
+                    row_fill,
+                    align=1 if centered else 0,
+                    bold=(row_index == 0)
+                )
+
+                x += width
+
+        y += row_height
+
+    # ==========================================================
+    # SAVE
+    # ==========================================================
 
     temp_pdf = "/tmp/final_quote.pdf"
 
     pdf.save(
-        temp_pdf
+        temp_pdf,
+        garbage=4,
+        deflate=True
     )
 
     pdf.close()
@@ -1466,8 +1797,9 @@ def create_pdf_quote(
             f.read()
         )
 
-    return pdf_bytes
+    pdf_bytes.seek(0)
 
+    return pdf_bytes
 
 # ==========================
 # UI
@@ -1659,9 +1991,9 @@ if st.button(
 
 
 
-        # ==========================
+        # =========================================================================================================================
         # EXCEL DOWNLOAD
-        # ==========================
+        # =========================================================================================================================
 
         if output_type in ["Excel","Both"]:
 
