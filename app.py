@@ -1016,15 +1016,21 @@ def create_quote_image(excel_path, currency_symbol):
     # UNICODE FONT
     # ========================================================
 
-    font_path = (
-        "/usr/share/fonts/truetype/liberation/"
-        "LiberationSans-Regular.ttf"
-    )
+    # Prefer fonts bundled with the app so this also works on
+    # Streamlit Community Cloud, where system font paths can differ.
+    regular_font_candidates = [
+        BASE_DIR / "fonts" / "DejaVuSans.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+    ]
+    bold_font_candidates = [
+        BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ]
 
-    bold_font_path = (
-        "/usr/share/fonts/truetype/liberation/"
-        "LiberationSans-Bold.ttf"
-    )
+    font_path = next((str(p) for p in regular_font_candidates if p.exists()), None)
+    bold_font_path = next((str(p) for p in bold_font_candidates if p.exists()), None)
 
     try:
 
@@ -1344,27 +1350,24 @@ def create_pdf_quote(
     page3 = pdf[2]
 
     # Use a Unicode font so both € and £ are embedded correctly.
+    # Bundle DejaVu Sans in the repository: cloud containers do not
+    # guarantee that desktop Linux font packages are installed.
     font_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        BASE_DIR / "fonts" / "DejaVuSans.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
     ]
 
     bold_font_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
     ]
 
-    font_path = next(
-        (p for p in font_candidates if Path(p).exists()),
-        None
-    )
-
-    bold_font_path = next(
-        (p for p in bold_font_candidates if Path(p).exists()),
-        None
-    )
+    font_path = next((str(p) for p in font_candidates if p.exists()), None)
+    bold_font_path = next((str(p) for p in bold_font_candidates if p.exists()), None)
 
     if not font_path:
         raise FileNotFoundError(
