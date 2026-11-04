@@ -1019,11 +1019,15 @@ def create_quote_image(excel_path, currency_symbol):
     # Prefer fonts bundled with the app so this also works on
     # Streamlit Community Cloud, where system font paths can differ.
     regular_font_candidates = [
+        # Support font files uploaded directly to the repository root.
+        BASE_DIR / "DejaVuSans.ttf",
         BASE_DIR / "fonts" / "DejaVuSans.ttf",
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
         Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
     ]
     bold_font_candidates = [
+        # Support font files uploaded directly to the repository root.
+        BASE_DIR / "DejaVuSans-Bold.ttf",
         BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
@@ -1353,6 +1357,8 @@ def create_pdf_quote(
     # Bundle DejaVu Sans in the repository: cloud containers do not
     # guarantee that desktop Linux font packages are installed.
     font_candidates = [
+        # Support font files uploaded directly to the repository root.
+        BASE_DIR / "DejaVuSans.ttf",
         BASE_DIR / "fonts" / "DejaVuSans.ttf",
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
         Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
@@ -1360,6 +1366,8 @@ def create_pdf_quote(
     ]
 
     bold_font_candidates = [
+        # Support font files uploaded directly to the repository root.
+        BASE_DIR / "DejaVuSans-Bold.ttf",
         BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
